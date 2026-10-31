@@ -47,7 +47,7 @@
     "@larksuiteoapi/node-sdk": "^1.71.1",
     "@modelcontextprotocol/sdk": "^1.29.0",
     "cac": "^6.7.14",
-    "croner": "^10.0.1",
+    "croner": "^11.0.0",
     "dotenv": "^17.4.2",
     "zod": "^4.4.3"
   },
