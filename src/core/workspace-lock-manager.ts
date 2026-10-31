@@ -446,7 +446,10 @@ export class WorkspaceLockManager {
       this.notifyWaiters(key);
     }, checkPointMs);
 
-    waiter.timer.unref?.();
+    // 刻意不调用 unref()：等待锁的 Promise 尚未收口时，timer 必须让事件循环保持存活。
+    // Node 22 的 test runner 在事件循环先于 Promise 结束时，会把整个测试标记为
+    // "Promise resolution is still pending but the event loop has already resolved"；
+    // 生产环境即使有其他 handle 掩盖，本质上仍是"等待被静默取消"。
   }
 
   private releaseWrite(key: string, holderId: string): void {
