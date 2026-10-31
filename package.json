@@ -44,7 +44,7 @@
     "node": ">=22"
   },
   "dependencies": {
-    "@larksuiteoapi/node-sdk": "^1.71.1",
+    "@larksuiteoapi/node-sdk": "^1.76.0",
     "@modelcontextprotocol/sdk": "^1.29.0",
     "cac": "^6.7.14",
     "croner": "^10.0.1",
