@@ -1,0 +1,311 @@
+import { createHash } from 'node:crypto';
+import { promptInputForPlatform } from './types.js';
+import type {
+  CliAdapter,
+  CliPromptInput,
+  CliEvent,
+  CliRunStats,
+} from './types.js';
+import { appToolNameOf, claudeAppToolArgs } from './app-tools.js';
+import { normalizeVolatileTokens, stableStringify } from '../core/runaway-detector.js';
+
+interface ClaudeEvent {
+  type?: unknown;
+  subtype?: unknown;
+  is_error?: unknown;
+  result?: unknown;
+  session_id?: unknown;
+  duration_ms?: unknown;
+  num_turns?: unknown;
+  usage?: unknown;
+  modelUsage?: unknown;
+  message?: unknown;
+}
+
+interface ClaudeContentBlock {
+  type?: unknown;
+  id?: unknown;
+  name?: unknown;
+  input?: unknown;
+  tool_use_id?: unknown;
+  is_error?: unknown;
+}
+
+const TOOL_LABELS: Record<string, string> = {
+  Agent: '启动子任务',
+  Bash: '运行命令',
+  Edit: '修改文件',
+  Glob: '查找文件',
+  Grep: '搜索代码',
+  Read: '读取文件',
+  Task: '启动子任务',
+  TaskOutput: '等待子任务完成',
+  WebFetch: '读取网页',
+  WebSearch: '搜索资料',
+  Write: '写入文件',
+};
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null;
+}
+
+function asNumber(value: unknown): number | undefined {
+  return typeof value === 'number' && Number.isFinite(value)
+    ? value
+    : undefined;
+}
+
+function shortPath(value: unknown): string | undefined {
+  if (typeof value !== 'string' || !value) return undefined;
+  const normalized = value.replaceAll('\\', '/');
+  const parts = normalized.split('/').filter(Boolean);
+  return parts.slice(normalized.startsWith('/') ? -2 : -3).join('/');
+}
+
+function shortText(value: unknown, maxLength = 72): string | undefined {
+  if (typeof value !== 'string') return undefined;
+  const text = value.replace(/\s+/g, ' ').trim();
+  if (!text) return undefined;
+  return text.length > maxLength ? `${text.slice(0, maxLength - 1)}…` : text;
+}
+
+function toolDetail(name: string, input: unknown): string | undefined {
+  if (!isRecord(input)) return undefined;
+  if (['Read', 'Edit', 'Write'].includes(name)) {
+    return shortPath(input.file_path);
+  }
+  if (name === 'Glob') return shortText(input.pattern);
+  if (name === 'Grep') return shortText(input.pattern);
+  if (name === 'Bash') return shortText(input.description);
+  if (name === 'Agent' || name === 'Task') return shortText(input.description);
+  if (name === 'WebSearch') return shortText(input.query);
+  return undefined;
+}
+
+/**
+ * 提取工具结果的有界摘要。
+ *
+ * 只取前 600 字符：循环检测关心的是「结果是否实质相同」，
+ * 而完整结果可能有数十 KB —— 全量入窗会让指纹计算成为新的性能开销。
+ * 归一化（剥离时间戳/耗时/id）由检测器统一完成，此处保持原始文本。
+ */
+function toolResultDigest(block: ClaudeContentBlock): string | undefined {
+  const content = (block as { content?: unknown }).content;
+  if (typeof content === 'string') return content.slice(0, 600);
+  if (Array.isArray(content)) {
+    const text = content
+      .filter(isRecord)
+      .map((part) => (typeof part.text === 'string' ? part.text : ''))
+      .join('\n')
+      .trim();
+    return text ? text.slice(0, 600) : undefined;
+  }
+  return undefined;
+}
+
+function messageBlocks(message: unknown): ClaudeContentBlock[] {
+  if (!isRecord(message) || !Array.isArray(message.content)) return [];
+  return message.content.filter(isRecord);
+}
+
+function usageTokens(usage: unknown): number | undefined {
+  if (!isRecord(usage)) return undefined;
+  const values = [
+    asNumber(usage.input_tokens),
+    asNumber(usage.output_tokens),
+    asNumber(usage.cache_read_input_tokens),
+    asNumber(usage.cache_creation_input_tokens),
+  ].filter((value): value is number => value !== undefined);
+  return values.length
+    ? values.reduce((sum, value) => sum + value, 0)
+    : undefined;
+}
+
+function contextWindowTokens(modelUsage: unknown): number | undefined {
+  if (!isRecord(modelUsage)) return undefined;
+  const windows = Object.values(modelUsage)
+    .filter(isRecord)
+    .map((usage) => asNumber(usage.contextWindow))
+    .filter((value): value is number => value !== undefined && value > 0);
+  return windows.length ? Math.max(...windows) : undefined;
+}
+
+function parseStats(event: ClaudeEvent): CliRunStats | undefined {
+  const usage = isRecord(event.usage) ? event.usage : {};
+  const totalTokens = usageTokens(usage);
+  const windowTokens = contextWindowTokens(event.modelUsage);
+  const stats: CliRunStats = {
+    durationMs: asNumber(event.duration_ms),
+    turns: asNumber(event.num_turns),
+    totalTokens,
+    inputTokens: asNumber(usage.input_tokens),
+    outputTokens: asNumber(usage.output_tokens),
+    cacheReadTokens: asNumber(usage.cache_read_input_tokens),
+    cacheCreationTokens: asNumber(usage.cache_creation_input_tokens),
+    contextWindowTokens: windowTokens,
+  };
+  return Object.values(stats).some((value) => value !== undefined)
+    ? stats
+    : undefined;
+}
+
+function outputArgs(prompt: string, promptInput: CliPromptInput): string[] {
+  return [
+    '--dangerously-skip-permissions',
+    '-p',
+    ...(promptInput === 'argument' ? [prompt] : []),
+    '--output-format',
+    'stream-json',
+    '--verbose',
+    ...claudeAppToolArgs(),
+  ];
+}
+
+export class ClaudeAdapter implements CliAdapter {
+  readonly id = 'claude' as const;
+  readonly command = 'claude';
+  readonly displayName = 'Claude Code';
+
+  buildArgs(prompt: string, promptInput: CliPromptInput): string[] {
+    return outputArgs(prompt, promptInput);
+  }
+
+  buildResumeArgs(
+    prompt: string,
+    sessionId: string,
+    promptInput: CliPromptInput,
+  ): string[] {
+    return ['--resume', sessionId, ...outputArgs(prompt, promptInput)];
+  }
+
+  buildCompactPlan(sessionId: string, instructions?: string) {
+    const command = instructions?.trim()
+      ? `/compact ${instructions.trim()}`
+      : '/compact';
+    return {
+      protocol: 'claude-stream-json' as const,
+      command: this.command,
+      // 现在 prompt 走 stdin（`-p -`），runClaudeCompact 需要这份文本写入子进程。
+      prompt: command,
+      args: this.buildResumeArgs(
+        command,
+        sessionId,
+        promptInputForPlatform(process.platform),
+      ),
+    };
+  }
+
+  parseEvent(line: string): CliEvent | undefined {
+    return this.parseEvents(line)[0];
+  }
+
+  parseEvents(line: string): CliEvent[] {
+    let event: ClaudeEvent;
+    try {
+      event = JSON.parse(line) as ClaudeEvent;
+    } catch {
+      return [];
+    }
+
+    const sessionId =
+      typeof event.session_id === 'string' ? event.session_id : undefined;
+    if (event.type === 'system' && event.subtype === 'init' && sessionId) {
+      return [{ type: 'session', sessionId }];
+    }
+    if (event.type === 'assistant') {
+      const message = isRecord(event.message) ? event.message : {};
+      const usedTokens = usageTokens(message.usage);
+      const contextEvent: CliEvent[] =
+        usedTokens === undefined ? [] : [{ type: 'context', usedTokens }];
+      const toolEvents = messageBlocks(event.message).flatMap(
+        (block): CliEvent[] => {
+          if (
+            block.type !== 'tool_use' ||
+            typeof block.id !== 'string' ||
+            typeof block.name !== 'string'
+          )
+            return [];
+          const detail = toolDetail(block.name, block.input);
+          let contentDigest: string | undefined;
+          if (block.input !== undefined && block.input !== null) {
+            try {
+              const normalized = normalizeVolatileTokens(
+                stableStringify(block.input).split('\\').join('/'),
+              );
+              contentDigest = createHash('sha1').update(normalized.slice(0, 65536)).digest('hex').slice(0, 16);
+            } catch {
+              // 容错防御：仅在极特殊不可序列化对象时忽略，静默回退由底层 input 兜底，绝不阻断主 CLI 执行
+            }
+          }
+          const events: CliEvent[] = [
+            {
+              type: 'tool_start',
+              toolUseId: block.id,
+              toolName: block.name,
+              label: TOOL_LABELS[block.name] ?? `调用 ${block.name}`,
+              ...(detail ? { detail } : {}),
+              ...(contentDigest ? { contentDigest } : {}),
+            },
+          ];
+          // 必须由 `TERMINAL_CONTROL_TOOLS` + schedule_manage **派生**，严禁手工列举：
+          // 手写清单曾漏掉 relay_to_peer / request_escalation / submit_tech_review /
+          // submit_arbitration_verdict，使这些终结型工具在 Claude 引擎下永不发出 tool_call——
+          // 宿主既看不到它们（静默丢弃），也不会触发"未承接"告警（那个探针同样依赖 tool_call）。
+          // 由于生产 bot 全部使用 Claude 引擎，这是**实际生效路径**上的空白。
+          const forwardedToolName = appToolNameOf(block.name);
+          if (forwardedToolName) {
+            events.push({
+              type: 'tool_call',
+              toolUseId: block.id,
+              toolName: forwardedToolName,
+              input: block.input,
+            });
+          }
+          return events;
+        },
+      );
+      return [...contextEvent, ...toolEvents];
+    }
+    if (event.type === 'user') {
+      return messageBlocks(event.message).flatMap((block): CliEvent[] => {
+        if (
+          block.type !== 'tool_result' ||
+          typeof block.tool_use_id !== 'string'
+        ) {
+          return [];
+        }
+        return [
+          {
+            type: 'tool_end',
+            toolUseId: block.tool_use_id,
+            failed: block.is_error === true,
+            ...(toolResultDigest(block) ? { resultDigest: toolResultDigest(block)! } : {}),
+          },
+        ];
+      });
+    }
+    if (event.type !== 'result') return [];
+    if (event.is_error) {
+      return [
+        {
+          type: 'error',
+          message:
+            typeof event.result === 'string'
+              ? event.result
+              : 'Claude Code 执行失败',
+          ...(sessionId ? { sessionId } : {}),
+        },
+      ];
+    }
+    if (typeof event.result !== 'string') return [];
+    const stats = parseStats(event);
+    return [
+      {
+        type: 'result',
+        answer: event.result,
+        ...(sessionId ? { sessionId } : {}),
+        ...(stats ? { stats } : {}),
+      },
+    ];
+  }
+}

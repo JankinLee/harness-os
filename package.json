@@ -1,0 +1,59 @@
+{
+  "name": "harness-os",
+  "version": "0.1.0",
+  "description": "A meta-harness for Claude Code and Codex: Feishu topic groups as the UI, auditable multi-agent delivery, deterministic gates.",
+  "license": "MIT",
+  "author": "JankinLee",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/JankinLee/harness-os.git"
+  },
+  "homepage": "https://github.com/JankinLee/harness-os",
+  "bugs": {
+    "url": "https://github.com/JankinLee/harness-os/issues"
+  },
+  "keywords": [
+    "agent",
+    "agent-harness",
+    "claude-code",
+    "codex",
+    "feishu",
+    "lark",
+    "multi-agent",
+    "mcp",
+    "typescript"
+  ],
+  "packageManager": "pnpm@8.15.9",
+  "type": "module",
+  "scripts": {
+    "dev": "pnpm start",
+    "start": "tsx watch --include .env --include \"config/*.json\" src/index.ts",
+    "start:once": "tsx src/index.ts",
+    "start:prod": "node dist/index.js",
+    "harness-os": "tsx src/deploy-cli.ts",
+    "demo:server": "pnpm --filter harness-os-demo-server start",
+    "demo:traffic": "pnpm --filter harness-os-demo-server traffic",
+    "lint:docs": "tsx scripts/lint-docs.ts",
+    "test": "tsx --test --test-concurrency=1 \"tests/unit/*.test.ts\"",
+    "probe": "tsx src/probe-lark.ts",
+    "build": "tsc",
+    "probe:cli": "tsx src/probe-cli.ts",
+    "probe:tool": "tsx src/probe-app-tool.ts"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "dependencies": {
+    "@larksuiteoapi/node-sdk": "^1.71.1",
+    "@modelcontextprotocol/sdk": "^1.29.0",
+    "cac": "^6.7.14",
+    "croner": "^10.0.1",
+    "dotenv": "^17.4.2",
+    "zod": "^4.4.3"
+  },
+  "devDependencies": {
+    "@types/node": "^26.3.0",
+    "tsx": "^4.23.1",
+    "typescript": "^7.0.2"
+  }
+}

@@ -1,0 +1,7 @@
+packages:
+  - '.'
+  - 'demo-server'
+
+allowBuilds:
+  esbuild: true
+  protobufjs: true

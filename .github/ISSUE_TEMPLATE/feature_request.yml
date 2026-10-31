@@ -1,0 +1,41 @@
+name: Feature request
+description: Propose a capability or improvement
+title: "[feat]: "
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        HarnessOS is intentionally a thin host. Proposals that add a new agent loop, a new database, or a large framework dependency are likely to be out of scope. Explain the safety and operational trade-offs.
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: What problem are you trying to solve? Who experiences it?
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposal
+      description: What should change? Include the smallest useful version.
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: What else did you consider, and why is it worse?
+    validations:
+      required: false
+
+  - type: textarea
+    id: risks
+    attributes:
+      label: Safety and operational risks
+      description: New permissions, execution surface, migration cost, or failure modes.
+    validations:
+      required: false

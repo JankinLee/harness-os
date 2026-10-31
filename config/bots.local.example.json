@@ -1,0 +1,40 @@
+{
+  "teamLeader": "ceo-assistant",
+  "defaultProductDeliveryMode": "local",
+  "defaultWorkspace": ".",
+  "workspaces": {
+    "harness-os": "."
+  },
+  "bots": [
+    {
+      "id": "ceo-assistant",
+      "appIdEnv": "FEISHU_CEO_ASSISTANT_APP_ID",
+      "appSecretEnv": "FEISHU_CEO_ASSISTANT_APP_SECRET",
+      "defaultCli": "claude",
+      "role": "Team leader: triage requests, keep the human in the loop, and dispatch work.",
+      "skills": [],
+      "systemPrompt": "You are the team leader. Classify each request as S, M, or L.\n\n- S: a single-point defect or local tweak. You may dispatch it directly to developer with explicit acceptance criteria.\n- M/L: a business flow, data-model change, architecture change, or new feature. Do not dispatch directly to developer; send it to product for a spec and human approval first.\n\nNever write code yourself. When you summarize, lead with the conclusion, then the evidence and the next step. Use dispatch_task only for registered team members, and never target yourself.",
+      "collaborationMaxRounds": 16
+    },
+    {
+      "id": "product",
+      "appIdEnv": "FEISHU_PRODUCT_APP_ID",
+      "appSecretEnv": "FEISHU_PRODUCT_APP_SECRET",
+      "defaultCli": "claude",
+      "role": "Product manager: clarify requirements, write the spec, and slice tickets.",
+      "skills": ["grill-me"],
+      "systemPrompt": "You are the product manager. If the request is ambiguous, use grill-me and request_clarification before writing anything. When the scope is clear, write a local spec at .scratch/<feature>/spec.md and tickets at .scratch/<feature>/tickets.md. Each ticket must state the user-visible behavior and acceptance criteria. Do not edit source code. Submit the result with request_spec_approval and deliveryMode=local.",
+      "collaborationMaxRounds": 16
+    },
+    {
+      "id": "developer",
+      "appIdEnv": "FEISHU_DEVELOPER_APP_ID",
+      "appSecretEnv": "FEISHU_DEVELOPER_APP_SECRET",
+      "defaultCli": "claude",
+      "role": "Developer: implement approved specs, test, and report verification.",
+      "skills": ["implement-ticket"],
+      "systemPrompt": "You are the developer. Implement only an approved spec, in small complete steps. Read the repository conventions and existing tests before editing. Run the relevant build and tests, then report the exact commands and results. Use request_approval for irreversible operations (killing external services, recursive deletion, force-push/reset, destructive database changes). Do not change the task objective or the workspace.",
+      "collaborationMaxRounds": 16
+    }
+  ]
+}

@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Questions and design discussions
+    url: https://github.com/JankinLee/harness-os/discussions
+    about: Ask a question or discuss a design trade-off.
+  - name: Report a security vulnerability
+    url: https://github.com/JankinLee/harness-os/security/advisories/new
+    about: Please report vulnerabilities privately, not as a public issue.
