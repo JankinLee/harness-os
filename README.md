@@ -6,20 +6,32 @@
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 ![Node](https://img.shields.io/badge/node-%3E%3D22-brightgreen)
 
-HarnessOS is not another agent framework. It is a **thin, event-driven host** that orchestrates existing coding CLIs (Claude Code and Codex) as headless workers. A Feishu topic group is the UI; each topic maps to an isolated CLI session and a workspace; deterministic gates, human approval cards, and a persistent flow log keep the loop auditable.
+HarnessOS is not another agent framework. It is a **thin, event-driven Agent host** that orchestrates existing coding CLIs (Claude Code and Codex) as headless workers. A Feishu topic group is the UI; each topic maps to an isolated CLI session and a workspace; deterministic gates, human approval cards, and flow records plus capsule lineage keep the loop auditable.
 
-This repository is the **stable single-team edition**. Multi-team orchestration is not part of this release.
+This repository is the **single-team edition**. Multi-team orchestration is not part of this release.
 
 ## Why it exists
 
-- Coding CLIs are powerful, but they are stateless processes. Exposing them directly to a chat surface makes permissions, recovery, and audit hard.
-- HarnessOS keeps the host thin: it routes messages, assembles context, gates tool calls, renders cards, and persists state. The CLI does the actual reasoning and editing.
-- High-risk operations stop at a human approval card. Read-only recon is enforced before execution, not after the damage is done.
-- Every collaboration hop can carry a context capsule and a lineage node, so a later failure can be traced back to the hop that introduced it.
+Coding CLIs are powerful, but a CLI process has no topic-level state, no role model, and no audit trail. Exposing it directly to a chat surface makes permissions, recovery, and review hard.
+
+HarnessOS keeps the host thin: it routes messages, assembles context, gates tool calls, renders cards, and persists state. The CLI does the reasoning and editing.
+
+What that buys you:
+
+- **A tool call outside the role is denied at the source**, before it runs; the MCP side applies the same check.
+- **A read-only task that writes is circuit-broken** and re-dispatched, not accepted as a review result.
+- **Two bots in disagreement go to structured arbitration**, not an infinite loop: three dialectic rounds, two escalations, a 30-minute preliminary verdict, and a 24-hour human window.
+- **Every hop can carry a capsule lineage** you can trace with `/governance` or `data/capsule-log.json`.
+
+The design is documented in [METHODOLOGY](docs/METHODOLOGY.md) (M1–M13); the failure log is in [LESSONS](docs/LESSONS.md) (20 postmortems).
+
+## Who it's for
+
+For a small team already using Feishu/Lark plus Claude Code or Codex, running on one Windows-first host; Linux and Windows are CI-covered, but Windows is the primary path. Not for non-Feishu IM, multi-tenant SaaS, or multi-team orchestration — this edition is single-team; it also does not provide an OS-level sandbox. The card UI is Chinese-only in this release.
 
 ## Demo
 
-A 30–60 second recording is the fastest way to understand the system:
+The loop, in five steps:
 
 1. A human posts a task in a Feishu topic group.
 2. The leader bot dispatches it to a product bot.
@@ -27,21 +39,134 @@ A 30–60 second recording is the fastest way to understand the system:
 4. A high-risk operation stops at an approval card.
 5. The result returns to the same topic with a delivery card.
 
-The demo GIF/video will be linked here with the first public release. Until then, `pnpm demo:server` provides a local fault-injection server for experimenting with the logging and patrol path.
+The loop above is the intended flow. The screenshots below are control-card examples from real runs, not one continuous recording; not every step has a screenshot.
 
-## Features
+### Example runs
 
-- **Feishu topic groups as sessions** — one topic = one CLI session = one workspace; switching workspace tears down the old CLI session.
-- **Claude Code / Codex adapters** — the host is engine-agnostic; both engines speak the same MCP tool contract.
-- **MCP tool gateway** — terminal control tools are exposed through a local MCP server and filtered by a single RBAC source.
-- **Human-in-the-loop cards** — clarification, approval, arbitration, technical review, and delivery cards are first-class state machines.
-- **Product spec lifecycle** — `pending → in_development → delivered → archived`, with stall and archive sweeps.
-- **Collaboration safety** — bounded chain hops, dialectic rounds, dynamic escalation, arbitration, and a circuit breaker.
-- **Workspace isolation** — read/write locks, heartbeat, adaptive extension, git worktree isolation, and content-level recon verification.
-- **Runaway detection** — normalized fingerprints, period-aware sliding windows, warning/critical/breaker levels.
-- **Context capsules** — bounded handoff payloads plus immutable lineage nodes for audit.
-- **Scheduling** — one-shot, fixed-interval, and cron tasks.
-- **Scratch lifecycle** — inspect, sweep, and archive stalled local workspaces.
+These screenshots are from a private deployment of the single-team edition.
+Cards are rendered by `src/im/card.ts`; some titles come from callers
+(`src/app/recon-guard.ts`, `src/index.ts`).
+
+| | |
+|---|---|
+| ![Dispatch card: project, result owner, expected output, auto-return](docs/evidence/dispatch-contract.png)<br>**A dispatch is a contract.** Project, result owner, expected output, auto-return. | ![Permission denied card for a tool outside the role authority](docs/evidence/permission-denied.png)<br>**Role overreach is denied at the authority source.** The MCP side applies the same check. |
+| ![Read-only overreach circuit breaker](docs/evidence/readonly-overreach.png)<br>**Intent vs effect is checked.** A read-only task that writes is circuit-broken and re-dispatched. | ![Human rejection, revert, and context budget warning](docs/evidence/reject-revert-budget.png)<br>**A human can reject a design.** The agent reverts and rebuilds; the budget warning fires at 80% and this run reached 89%. |
+| ![Execution telemetry: 3m40s, 86 tool calls, context growth](docs/evidence/execution-telemetry.png)<br>**Execution is observable.** In this 3m40s run, elapsed time, 86 tool calls, and context growth are on the card. | ![Product spec approval card](docs/evidence/approval-card.png)<br>**A spec is confirmed at an approval card.** The product plan is confirmed before development starts. |
+
+**Clarification, not guessing.**
+![Clarification card: one question, a recommended option, and a free-form answer](docs/evidence/clarification-card.png)
+
+When a request is ambiguous, the bot asks before choosing a scope: one to five
+questions, a recommended option, a free-form answer, and "continue with
+recommendations".
+
+> Screenshots are redacted (tenant, paths, task IDs, human names, and internal
+> project terms). Agent display names, UI card titles, and public tool/role
+> names are retained. The originals stay private.
+
+## Capabilities
+
+### Human-in-the-loop
+
+- **Clarification, not guessing.** An ambiguous request produces a clarification card: one to five questions, a recommended option, a free-form answer, and "continue with recommendations". Answers are stateful (`ClarificationFlow`); a later message cannot silently supersede them.
+- **Approval for high-risk work.** A tool call that needs approval stops at a card with detail, impact, and rollback fields. The default timeout is 300 s and is fail-safe: a timeout rejects the operation.
+- **Arbitration when the team deadlocks.** Product and developer get three dialectic rounds and two dynamic escalations. When a budget is exhausted, the flow enters arbitration: the leader bot has 30 minutes for a preliminary verdict (`adopt_product`, `adopt_developer`, or `abstain`). The verdict goes to a 24-hour human decision window (the open-source edition does not yet provide verdict escalation or definition); on timeout, it is auto-adopted only when it is decisive and the task is low-risk, otherwise the flow is suspended.
+- **Technical review is bot-to-bot; final review is human.** A technical-review flow collects adversarial comments and returns a verdict to the bots. The human-facing final review is the product-spec approval card; a delivery-review card returns the result to the same topic.
+
+The arbitration path, simplified:
+
+```mermaid
+stateDiagram-v2
+  [*] --> Dialectic
+  Dialectic --> PendingPreliminary: 3 rounds or 2 escalations
+  PendingPreliminary --> PendingHuman: verdict / abstain / 30 min timeout
+  PendingHuman --> Resolved: human verdict
+  PendingHuman --> Resolved: 24 h timeout + decisive low-risk
+  PendingHuman --> Suspended: 24 h timeout otherwise
+  Suspended --> PendingHuman: human interaction
+  Resolved --> [*]
+```
+
+### Collaboration and orchestration
+
+- **Leader → product → developer.** The leader owns dispatch and arbitration; product turns a request into a spec; developer implements. Each hop is a card and a state-transition contract, not a free-form chat.
+- **Dispatch is a contract.** A dispatch card names the project, the result owner, the expected output, and the auto-return rule; the receiver cannot silently redefine the output.
+- **Task model.** A task is topic-scoped (`taskId`) with an intent (`recon` or `implement`), a persisted S/M/L tier, progress (elapsed time, tool count, context), and an owner/admin abort. Clarification, approval, arbitration, and capsule lineage are keyed by `taskId`.
+- **Bounded collaboration.** A chain defaults to 16 hops (`collaborationMaxRounds`, range 1–32); hitting the hop limit terminates the chain with a circuit-break card. Three dialectic rounds and two escalations are the inner budgets; hitting either enters arbitration.
+- **Context capsules and lineage.** Every hop can carry a bounded context capsule and an immutable lineage node, so a later failure can be traced to the hop that introduced it.
+- **Spec lifecycle.** A product spec moves `pending → in_development → delivered → archived`. Seven days without activity enters stall/quarantine; fourteen days without acceptance auto-archives; a rejected delivery returns to development.
+
+### Feishu surface
+
+- **Topic = session = workspace.** One topic maps to one CLI session and one workspace; switching workspace tears down the old session.
+- **Document comments are a first-class entry point.** A comment that mentions the bot (`drive.notice.comment_add_v1`) is routed to the bot, resolved to the product-spec flow by `fileToken`, deduplicated by `eventId` (1,000-event window), and answered in the same comment thread.
+- **Cards are the UI.** Clarification, approval, arbitration, product-spec approval, delivery, and worktree-conflict cards carry explicit actions.
+- **Other cards cover the rest of the loop.** Queue-waiting, session-notice, team, schedule, governance, resume, and circuit-break cards cover non-main-path states; circuit-break is informational; the `product-spec` family has approved, expired, revision, and archived variants.
+- **Chat commands.** The topic surface accepts:
+
+| Command | What it does |
+|---|---|
+| `/workspace`, `/mount`, `/cd` | Inspect or switch the workspace |
+| `/schedule`, `/schedules` | Create or list scheduled tasks |
+| `/compact` | Compress the current context |
+| `/governance` | Open the governance/audit card |
+| `/team` | Show the roster |
+| `/resume`, `/new`, `/close` | Session lifecycle |
+| `/archive` | Archive active product-spec flows in this topic and release doc listeners |
+| `/status`, `/help` | Status and command help |
+| `/claude <task>`, `/codex <task>` | Route a task to that engine (new topic or current idle topic) |
+| `/use`, `/engine` | Switch the current topic's engine |
+
+```mermaid
+sequenceDiagram
+  participant H as Human
+  participant F as Feishu doc
+  participant L as Lark gateway
+  participant B as Bot
+  H->>F: comment with @bot
+  F->>L: drive.notice.comment_add_v1
+  L->>B: eventId + fileToken + mentionedBot
+  B->>B: dedup (1,000 events) + resolve flow by fileToken
+  B-->>F: reply in the same comment thread
+```
+
+### Tool and workspace governance
+
+- **One RBAC source.** Terminal and control tools are exposed through a local MCP gateway and filtered by a single role→tool authority source; the MCP side applies the same check.
+- **Workspace write isolation.** git worktree isolation, workspace locks with heartbeat, adaptive extension, and content-level recon verification keep concurrent writers from overwriting each other.
+- **Overreach detection.** A task that declares a read-only intent but changes the workspace is circuit-broken and re-dispatched; a tool call outside the role's authority is denied before execution.
+
+### Context and reliability
+
+- **Context budget.** M12 guidance in the L0 prompt asks the CLI to summarize as context grows, keep the last 3 rounds, and keep any single tool result under 30% of context. The host does not enforce the fixed 180K guideline; it warns at 80% of the model's actual context window (once per run) and keeps a stable prefix for KV-cache reuse.
+- **Bounded runs.** A CLI run has a 2-hour wall-clock cap and a 5-minute silent-output timeout (`CLI_TIMEOUT_MS`, `CLI_SILENT_TIMEOUT_MS`); a hung or silent process is killed.
+- **Runaway detection.** Normalized fingerprints and period-aware sliding windows produce warning / critical / breaker levels; the breaker becomes a card, not a silent retry.
+- **Scheduling.** One-shot, fixed-interval (60 s–24 h), and cron tasks are first-class scheduled runs with their own cards; a local scheduling API and a 100-run history are included.
+- **Experience loop.** Runtime friction is categorized (card schema errors, gate interception, step timeout, runaway, collaboration dispute, subprocess escape, unhandled control flow), counted, and after 3 hits becomes a settlement candidate for review.
+- **Scratch lifecycle.** Inspect, sweep, and archive stalled local workspaces; flow records and capsule lineage remain the audit trail.
+
+### Safety and limits
+
+- **Least privilege and approvals.** Use a least-privilege Feishu app, keep approvals on, and review the CLI stop lists.
+- **No OS-level sandbox.** Prompt injection and CLI tool misuse remain risks; the host does not claim OS-level isolation.
+- **No telemetry.** Runtime data stays on your machine; nothing is sent to the author.
+
+### Card catalog
+
+| Card | When it appears | Human action |
+|---|---|---|
+| Clarification | The request is ambiguous | Answer, pick a recommendation, or continue |
+| Approval | A high-risk tool call | Approve / reject; timeout rejects |
+| Arbitration | Dialectic/escalation exhausted | Choose Product / Developer, terminate, or enter a custom verdict |
+| Product spec approval | A spec is ready | Confirm or request changes |
+| Delivery review | The result is ready | Accept / request changes |
+| Queue waiting | A workspace lock is held | Wait or cancel |
+| Worktree conflict | Two writers collide | Pick a resolution |
+| Chain circuit break | Hop limit reached | No card action; re-scope and restart |
+
+`session-notice`, `team`, `schedule-created`, `schedule-run`, `governance`, `resume`, and the `product-spec` variants are also implemented in `src/im/card.ts`.
+
+Defaults and environment variables for these knobs are listed in [Configuration & thresholds](#configuration--thresholds).
 
 ## Architecture
 
@@ -74,7 +199,7 @@ See [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) for the component map, messag
 ### Prerequisites
 
 - Node.js **22+** and pnpm **8+**.
-- At least one Feishu custom app with bot capability (one app per configured bot is the simplest setup).
+- The example roster uses three bot apps (`ceo-assistant`, `product`, `developer`); provide three Feishu apps. Setting unused bots to `"enabled": false` gives a single-bot smoke test, but the main chain needs `product` and `developer` enabled.
 - Claude Code and/or Codex CLI installed and authenticated on the host.
 - Optional: `lark-cli` plus the `lark-doc` / `lark-drive` / `lark-wiki` skills if you want Feishu Docs/Wiki delivery. Without them, use local delivery.
 
@@ -90,6 +215,8 @@ pnpm build
 pnpm start
 ```
 
+Unit tests do not need Feishu credentials: `pnpm test` runs against local fixtures.
+
 For Feishu Docs/Wiki delivery, start from `config/bots.example.json` instead and follow [`docs/SETUP.md`](docs/SETUP.md). It includes the full system prompts, the optional `lark-*` skills, and the `<your-wiki-space-id>` placeholder.
 
 The `harness-os` helper CLI can check the local environment:
@@ -98,7 +225,9 @@ The `harness-os` helper CLI can check the local environment:
 pnpm harness-os doctor
 ```
 
-`doctor` checks Node, pnpm, PM2, Claude Code, Codex, `.env`, and `config/bots.json`.
+`doctor` checks Node, pnpm, Claude Code, Codex, `.env`, and `config/bots.json`; it also reports PM2. PM2 is only required for the `harness-os` process-management commands.
+
+The fastest credential-free checks are `pnpm test` and `pnpm harness-os doctor`. `pnpm demo:server` plus `pnpm demo:traffic -- --scenario error-spike` start only the demo order service and write `demo-server/logs/app.log`; they do not start HarnessOS or render the Feishu cards. The patrol loop needs a scheduled task in HarnessOS (requires Feishu).
 
 ### Feishu setup
 
@@ -113,6 +242,8 @@ You need, for each bot app:
 See [`docs/SETUP.md`](docs/SETUP.md) for the step-by-step configuration and troubleshooting.
 
 ## Configuration & thresholds
+
+Key limits at a glance: 2 h run cap / 5 min silent kill; 16 hops; 300 s approval; 60 s–24 h schedule; 80% context warning; 3-hit experience.
 
 These are the defaults at `v0.1.0`. Some are environment-configurable; others are compile-time constants. If you change one, update this table and the test that guards it.
 
@@ -158,7 +289,7 @@ These are the defaults at `v0.1.0`. Some are environment-configurable; others ar
 | Runaway window size | 24 invocations | `src/core/runaway-detector.ts` | Sliding window of normalized tool-call fingerprints. |
 | Period 1 thresholds | warning 2 / critical 3 / breaker 3 | `src/core/runaway-detector.ts` | Same tool call (including result) repeated. Breaker requires a failure in the cycle. |
 | Period 2–3 thresholds | warning 2 / critical 3 / breaker 4 | `src/core/runaway-detector.ts` | Ping-pong patterns. Breaker requires a failure in the cycle. |
-| Context warning | 80% of the CLI context window | `src/index.ts` | Sends a yellow warning card once per session. |
+| Context warning | 80% of the CLI context window | `src/index.ts` | Sends a yellow warning card once per run. |
 | Capsule character budget | 2,000 chars | `src/core/collaboration.ts` | Total context capsule budget. |
 | Capsule constraints budget | 600 chars | `src/core/collaboration.ts` | Constraints section inside the capsule. |
 | Experience / friction threshold | 3 hits | `src/core/experience-settlement.ts` | A candidate becomes eligible for settlement after three hits. |
@@ -242,10 +373,10 @@ Read the selected lessons in [`docs/LESSONS.md`](docs/LESSONS.md). The author's 
 
 ## Limitations
 
-- **Single-team edition.** The multi-team/dynamic-team orchestration developed after this release is not included.
+- **Single-team edition.** Multi-team/dynamic-team orchestration is out of scope for `v0.1.0`.
 - **Fixed role ids.** RBAC and leader instructions currently key on `ceo-assistant`, `product`, and `developer`. Renaming a role requires updating `src/core/tool-rbac.ts`, `src/core/team-registry.ts`, and their tests.
 - **Feishu/Lark only.** The IM gateway is isolated in `src/im`, but no other chat adapter ships in `v0.1.0`.
-- **Windows-first.** The host is developed and used on Windows. Linux/macOS are covered by the core test suite and CI, but Windows-specific process-tree behavior is the primary path.
+- **Windows-first.** The host is developed and used on Windows. Linux and Windows are covered by the core test suite and CI; macOS is not tested in CI. Windows-specific process-tree behavior is the primary path.
 - **Single host.** State is JSON files under `data/`; there is no distributed queue, multi-tenant isolation, or horizontal scaling.
 - **External engines required.** You must install and authenticate Claude Code and/or Codex. HarnessOS does not bundle model access.
 - **Optional Feishu Docs/Wiki path.** `lark-cli` and the `lark-*` skills are not bundled. Local delivery works without them.
@@ -254,14 +385,7 @@ Read the selected lessons in [`docs/LESSONS.md`](docs/LESSONS.md). The author's 
 
 ## Project status
 
-`v0.1.0` is the first public, stable single-team edition, derived from the author's private stable baseline. It is used daily on a real Feishu workflow, but the public API and configuration may still change in `0.x`.
-
-Planned work (not commitments):
-
-- Multi-team orchestration.
-- Additional IM adapters.
-- Stronger sandboxing and egress controls.
-- A local mock Feishu adapter for credential-free demos.
+`v0.1.0` is the first public single-team edition, derived from the author's private baseline. The author's private deployment runs it daily on a real Feishu workflow; the public edition is new, and the public API and configuration may still change in `0.x`.
 
 ## Contributing
 
